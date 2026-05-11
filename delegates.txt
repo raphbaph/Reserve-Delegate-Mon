@@ -1,0 +1,17 @@
+# Delegate addresses to track — ONE PER LINE.
+# Lines starting with `#` and blank lines are ignored.
+# Addresses are case-insensitive; ENS will be resolved automatically.
+#
+# Example:
+# Ham
+0x49B4564cb533E092D43C628386258F0B78D86c52
+#d15c0
+0x20Ef721D984a8c1CA9dE334ceFa6702a8Fd258e8
+#R72
+0x26F270eA78149671e55cFA90a0fe6D5cdAA708c4
+#Braden
+0xffA68Ea3d4541493e29f9Ca6F4D8219e45F5F23C
+#Zeb
+0x22957432b699DD154945A7e0614481fCBD173af7
+#Eureka
+0x0aD7c222C62EF075eB0DCbe6dB64b9d2EC050daE

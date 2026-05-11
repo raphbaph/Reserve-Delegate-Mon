@@ -1,0 +1,8 @@
+# Reserve governor contracts to scan — ONE PER LINE.
+# Optional human-readable label after a comma; it appears in the CSV.
+# Lines starting with `#` and blank lines are ignored.
+#
+# Example:
+0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, eUSD
+0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, ETHPlus
+0x0d86883FAf4FfD7aEb116390af37746F45b6f378, USD3
