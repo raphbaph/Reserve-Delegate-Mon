@@ -2,19 +2,11 @@ import 'dotenv/config';
 import { ethers } from 'ethers';
 import fs from 'node:fs';
 
-const RPC_URL = process.env.RPC_URL;
-if (!RPC_URL) {
-  console.error('Missing RPC_URL — copy .env.example to .env and fill it in.');
-  process.exit(1);
-}
-
 const args = parseArgs(process.argv.slice(2));
 if (!args.from || !args.to) {
   console.error('Usage: node index.js --from YYYY-MM-DD --to YYYY-MM-DD [--out votes.csv]');
   process.exit(1);
 }
-
-const provider = new ethers.JsonRpcProvider(RPC_URL);
 
 const GOVERNOR_ABI = [
   'event VoteCast(address indexed voter, uint256 proposalId, uint8 support, uint256 weight, string reason)',
@@ -24,7 +16,24 @@ const GOVERNOR_ABI = [
 
 const SUPPORT = { 0: 'Against', 1: 'For', 2: 'Abstain' };
 const CHUNK = 9_500;
-const PROPOSAL_LOOKBACK_BLOCKS = 1_800_000; // ~6 months
+const PROPOSAL_LOOKBACK_MONTHS = 6;
+
+const CHAIN_ALIASES = { ethereum: 'mainnet', eth: 'mainnet' };
+const CHAIN_ENV = {
+  mainnet: 'RPC_URL',
+  base: 'RPC_URL_BASE',
+};
+
+const providers = {};
+function getProvider(chain) {
+  if (providers[chain]) return providers[chain];
+  const envVar = CHAIN_ENV[chain];
+  if (!envVar) throw new Error(`Unsupported chain "${chain}". Supported: ${Object.keys(CHAIN_ENV).join(', ')}`);
+  const url = process.env[envVar];
+  if (!url) throw new Error(`Missing ${envVar} in .env (needed for chain "${chain}")`);
+  providers[chain] = new ethers.JsonRpcProvider(url);
+  return providers[chain];
+}
 
 main().catch((e) => { console.error(e); process.exit(1); });
 
@@ -34,32 +43,53 @@ async function main() {
   if (!delegates.length) throw new Error('delegates.txt has no addresses');
   if (!governors.length) throw new Error('governors.txt has no addresses');
 
-  console.log(`Tracking ${delegates.length} delegate(s) across ${governors.length} governor(s)`);
-  console.log(`Resolving block range for ${args.from} → ${args.to}…`);
-  const [fromBlock, toBlock] = await Promise.all([
-    dateToBlock(args.from, 'after'),
-    dateToBlock(args.to, 'before'),
-  ]);
-  console.log(`Block range: ${fromBlock} → ${toBlock}`);
+  const chains = [...new Set(governors.map((g) => g.chain))];
+  console.log(`Tracking ${delegates.length} delegate(s) across ${governors.length} governor(s) on ${chains.length} chain(s): ${chains.join(', ')}`);
+
+  // ENS resolution always uses mainnet (ENS lives on L1).
+  // Skip gracefully if mainnet RPC isn't configured (e.g. base-only setup).
+  let ensProvider = null;
+  try { ensProvider = getProvider('mainnet'); }
+  catch { console.warn('Skipping ENS resolution: RPC_URL (mainnet) not set'); }
 
   console.log('\nResolving ENS names…');
   const ensCache = new Map();
   for (const a of delegates) {
-    const name = await safeLookupAddress(a);
+    const name = ensProvider ? await safeLookupAddress(ensProvider, a) : null;
     ensCache.set(a.toLowerCase(), name || '');
     console.log(`  ${a}${name ? ' → ' + name : ''}`);
   }
 
-  const blockCache = new Map();
+  // Per-chain block ranges (same date → different blocks on each chain).
+  const proposalsFromDate = subtractMonths(args.from, PROPOSAL_LOOKBACK_MONTHS);
+  const ranges = new Map();
+  async function rangeFor(chain) {
+    if (ranges.has(chain)) return ranges.get(chain);
+    const p = getProvider(chain);
+    console.log(`\nResolving ${chain} block range for ${args.from} → ${args.to}…`);
+    const [fromBlock, toBlock, proposalsFromBlock] = await Promise.all([
+      dateToBlock(p, args.from, 'after'),
+      dateToBlock(p, args.to, 'before'),
+      dateToBlock(p, proposalsFromDate, 'after'),
+    ]);
+    console.log(`  ${chain}: votes ${fromBlock} → ${toBlock}; proposals from ${proposalsFromBlock}`);
+    const r = { fromBlock, toBlock, proposalsFromBlock };
+    ranges.set(chain, r);
+    return r;
+  }
+
+  const blockCache = new Map(); // key: `${chain}:${blockNumber}`
   const rows = [];
 
-  for (const { address, label } of governors) {
-    console.log(`\nGovernor ${address}${label ? ' (' + label + ')' : ''}`);
+  for (const { address, label, chain } of governors) {
+    const provider = getProvider(chain);
+    const { fromBlock, toBlock, proposalsFromBlock } = await rangeFor(chain);
+
+    console.log(`\nGovernor ${address} (${chain})${label ? ' — ' + label : ''}`);
     const contract = new ethers.Contract(address, GOVERNOR_ABI, provider);
 
-    const proposalsFrom = Math.max(0, fromBlock - PROPOSAL_LOOKBACK_BLOCKS);
-    console.log(`  Indexing proposals (block ${proposalsFrom} → ${toBlock})…`);
-    const proposalMap = await loadProposals(contract, proposalsFrom, toBlock);
+    console.log(`  Indexing proposals (block ${proposalsFromBlock} → ${toBlock})…`);
+    const proposalMap = await loadProposals(contract, proposalsFromBlock, toBlock);
     console.log(`  Found ${proposalMap.size} proposal(s)`);
 
     console.log(`  Querying votes…`);
@@ -67,9 +97,10 @@ async function main() {
     console.log(`  Found ${votes.length} vote(s) from tracked delegates`);
 
     for (const v of votes) {
-      const ts = await getBlockTimestamp(v.blockNumber, blockCache);
+      const ts = await getBlockTimestamp(provider, chain, v.blockNumber, blockCache);
       const id = v.args.proposalId.toString();
       rows.push({
+        chain,
         governor: address,
         governor_label: label || '',
         voter: v.args.voter,
@@ -88,6 +119,7 @@ async function main() {
   }
 
   rows.sort((a, b) =>
+    a.chain.localeCompare(b.chain) ||
     a.governor.localeCompare(b.governor) ||
     a.block_number - b.block_number,
   );
@@ -118,12 +150,22 @@ function readList(file) {
 
 function readGovernors(file) {
   return readList(file).map((line) => {
-    const [addr, ...labelParts] = line.split(',');
-    return { address: addr.trim(), label: labelParts.join(',').trim() };
+    const parts = line.split(',').map((s) => s.trim());
+    const addr = parts[0];
+    const label = parts[1] || '';
+    const rawChain = (parts[2] || 'mainnet').toLowerCase();
+    const chain = CHAIN_ALIASES[rawChain] || rawChain;
+    return { address: addr, label, chain };
   });
 }
 
-async function dateToBlock(dateStr, mode) {
+function subtractMonths(dateStr, months) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCMonth(d.getUTCMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
+
+async function dateToBlock(provider, dateStr, mode) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     throw new Error(`Invalid date "${dateStr}" — use YYYY-MM-DD`);
   }
@@ -140,21 +182,21 @@ async function dateToBlock(dateStr, mode) {
   return mode === 'after' ? lo : Math.max(0, lo - 1);
 }
 
-async function safeLookupAddress(addr) {
+async function safeLookupAddress(provider, addr) {
   try { return await provider.lookupAddress(addr); }
   catch { return null; }
 }
 
-async function getBlockTimestamp(n, cache) {
-  if (cache.has(n)) return cache.get(n);
+async function getBlockTimestamp(provider, chain, n, cache) {
+  const key = `${chain}:${n}`;
+  if (cache.has(key)) return cache.get(key);
   const b = await provider.getBlock(n);
-  cache.set(n, b.timestamp);
+  cache.set(key, b.timestamp);
   return b.timestamp;
 }
 
 async function loadVotes(contract, voters, fromBlock, toBlock) {
   const out = [];
-  // ethers passes an array as multiple values for the indexed topic (OR filter)
   const f1 = contract.filters.VoteCast(voters);
   const f2 = contract.filters.VoteCastWithParams(voters);
   for (let from = fromBlock; from <= toBlock; from += CHUNK) {
@@ -194,7 +236,7 @@ async function queryWithRetry(contract, filter, from, to, attempt = 0) {
 
 function writeCsv(file, rows) {
   const cols = [
-    'governor', 'governor_label', 'voter', 'voter_ens',
+    'chain', 'governor', 'governor_label', 'voter', 'voter_ens',
     'proposal_id', 'proposal_title', 'support',
     'weight_raw', 'weight', 'reason',
     'block_number', 'timestamp', 'tx_hash',

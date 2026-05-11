@@ -1,8 +1,15 @@
 # Reserve governor contracts to scan — ONE PER LINE.
-# Optional human-readable label after a comma; it appears in the CSV.
+# Format:  <address>, <label>, <chain>
+#   - label is optional (shown in CSV)
+#   - chain is optional, defaults to `mainnet`. Supported: mainnet, base.
 # Lines starting with `#` and blank lines are ignored.
 #
-# Example:
-0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, eUSD
-0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, ETHPlus
-0x0d86883FAf4FfD7aEb116390af37746F45b6f378, USD3
+# Examples:
+# 0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, eUSD, mainnet
+# 0xD56f09e158c9c3e1dE8D598e4E1Bc7E4fF29dfC8, Base Governor, base
+
+0x96dC1C14D3D5e2dDAa52368aDfe6E6b20b976832, eUSD, mainnet
+# NEW: 0xA8a608B9b558235E7f87d7024CC05E6f47d62022, ETHPlus, mainnet
+0x868Fe81C276d730A1995Dc84b642E795dFb8F753, ETHPlus, mainnet
+0xd895a5D391fc09F12e8C8D57CfDe5c59BFBE2FA7, USD3, mainnet
+0xD56f09e158c9c3e1dE8D598e4E1Bc7E4fF29dfC8, bsdETH, base
