@@ -16,7 +16,6 @@ const GOVERNOR_ABI = [
 
 const SUPPORT = { 0: 'Against', 1: 'For', 2: 'Abstain' };
 const CHUNK = 9_500;
-const PROPOSAL_LOOKBACK_MONTHS = 6;
 
 const CHAIN_ALIASES = { ethereum: 'mainnet', eth: 'mainnet' };
 const CHAIN_ENV = {
@@ -61,19 +60,17 @@ async function main() {
   }
 
   // Per-chain block ranges (same date → different blocks on each chain).
-  const proposalsFromDate = subtractMonths(args.from, PROPOSAL_LOOKBACK_MONTHS);
   const ranges = new Map();
   async function rangeFor(chain) {
     if (ranges.has(chain)) return ranges.get(chain);
     const p = getProvider(chain);
     console.log(`\nResolving ${chain} block range for ${args.from} → ${args.to}…`);
-    const [fromBlock, toBlock, proposalsFromBlock] = await Promise.all([
+    const [fromBlock, toBlock] = await Promise.all([
       dateToBlock(p, args.from, 'after'),
       dateToBlock(p, args.to, 'before'),
-      dateToBlock(p, proposalsFromDate, 'after'),
     ]);
-    console.log(`  ${chain}: votes ${fromBlock} → ${toBlock}; proposals from ${proposalsFromBlock}`);
-    const r = { fromBlock, toBlock, proposalsFromBlock };
+    console.log(`  ${chain}: proposals and votes ${fromBlock} → ${toBlock}`);
+    const r = { fromBlock, toBlock };
     ranges.set(chain, r);
     return r;
   }
@@ -83,13 +80,13 @@ async function main() {
 
   for (const { address, label, chain } of governors) {
     const provider = getProvider(chain);
-    const { fromBlock, toBlock, proposalsFromBlock } = await rangeFor(chain);
+    const { fromBlock, toBlock } = await rangeFor(chain);
 
     console.log(`\nGovernor ${address} (${chain})${label ? ' — ' + label : ''}`);
     const contract = new ethers.Contract(address, GOVERNOR_ABI, provider);
 
-    console.log(`  Indexing proposals (block ${proposalsFromBlock} → ${toBlock})…`);
-    const proposalMap = await loadProposals(contract, proposalsFromBlock, toBlock);
+    console.log(`  Indexing proposals (block ${fromBlock} → ${toBlock})…`);
+    const proposalMap = await loadProposals(contract, fromBlock, toBlock);
     console.log(`  Found ${proposalMap.size} proposal(s)`);
 
     console.log(`  Querying votes…`);
@@ -157,12 +154,6 @@ function readGovernors(file) {
     const chain = CHAIN_ALIASES[rawChain] || rawChain;
     return { address: addr, label, chain };
   });
-}
-
-function subtractMonths(dateStr, months) {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCMonth(d.getUTCMonth() - months);
-  return d.toISOString().slice(0, 10);
 }
 
 async function dateToBlock(provider, dateStr, mode) {
