@@ -6,7 +6,7 @@ Here's what to do to run it:
   What it does
 
   - Reads delegates.txt and governors.txt (commented templates already in place).
-  - Binary-searches block timestamps to convert your --from / --to dates into block numbers.
+  - Binary-searches block timestamps to convert your --from / --to dates into block numbers. Both dates are inclusive.
   - Per governor: pulls ProposalCreated events and VoteCast + VoteCastWithParams starting from the --from date
   filtered on the delegate set in one OR'd query per chunk.
   - Resolves ENS once per delegate (with forward-confirmation via lookupAddress).
@@ -18,6 +18,7 @@ Here's what to do to run it:
   - support is decoded to For / Against / Abstain.
   - weight assumes 18 decimals (true for Reserve's stRSR/ERC20Votes). weight_raw keeps the on-chain integer if you need exactness.
   - proposal_title stays blank if a vote references a proposal created before your --from date.
+  - RPC network IDs are checked at startup, and an empty/reversed date range fails with an actionable error instead of silently writing zero rows.
   - Block chunk size is 9,500 — well inside Alchemy's eth_getLogs ceiling. Retries with exponential backoff on transient failure
 
 Base support is in. Three things to do on your side:

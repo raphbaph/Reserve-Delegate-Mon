@@ -22,6 +22,10 @@ const CHAIN_ENV = {
   mainnet: 'RPC_URL',
   base: 'RPC_URL_BASE',
 };
+const CHAIN_IDS = {
+  mainnet: 1n,
+  base: 8453n,
+};
 
 const providers = {};
 function getProvider(chain) {
@@ -42,8 +46,30 @@ async function main() {
   if (!delegates.length) throw new Error('delegates.txt has no addresses');
   if (!governors.length) throw new Error('governors.txt has no addresses');
 
+  const fromDate = parseDate(args.from);
+  const toDate = parseDate(args.to);
+  if (fromDate > toDate) {
+    throw new Error(`Invalid date range ${args.from} → ${args.to}: --to must be on or after --from`);
+  }
+
   const chains = [...new Set(governors.map((g) => g.chain))];
   console.log(`Tracking ${delegates.length} delegate(s) across ${governors.length} governor(s) on ${chains.length} chain(s): ${chains.join(', ')}`);
+
+  // A valid RPC URL can still point at the wrong network. Without this check,
+  // querying a governor address on the wrong chain looks like a successful
+  // run with zero events.
+  for (const chain of chains) {
+    const provider = getProvider(chain);
+    const network = await provider.getNetwork();
+    const expectedChainId = CHAIN_IDS[chain];
+    if (expectedChainId !== undefined && network.chainId !== expectedChainId) {
+      throw new Error(
+        `RPC for "${chain}" returned chain ID ${network.chainId}; expected ${expectedChainId}. ` +
+        `Check ${CHAIN_ENV[chain]}.`,
+      );
+    }
+    console.log(`  ${chain}: chain ID ${network.chainId}`);
+  }
 
   // ENS resolution always uses mainnet (ENS lives on L1).
   // Skip gracefully if mainnet RPC isn't configured (e.g. base-only setup).
@@ -64,11 +90,18 @@ async function main() {
   async function rangeFor(chain) {
     if (ranges.has(chain)) return ranges.get(chain);
     const p = getProvider(chain);
-    console.log(`\nResolving ${chain} block range for ${args.from} → ${args.to}…`);
+    console.log(`\nResolving ${chain} block range for ${args.from} → ${args.to} (inclusive)…`);
+    const dayAfterTo = addDays(args.to, 1);
     const [fromBlock, toBlock] = await Promise.all([
       dateToBlock(p, args.from, 'after'),
-      dateToBlock(p, args.to, 'before'),
+      dateToBlock(p, dayAfterTo, 'before'),
     ]);
+    if (fromBlock > toBlock) {
+      throw new Error(
+        `${chain}: date range ${args.from} → ${args.to} contains no indexed blocks. ` +
+        `Use a range ending on or after the start date.`,
+      );
+    }
     console.log(`  ${chain}: proposals and votes ${fromBlock} → ${toBlock}`);
     const r = { fromBlock, toBlock };
     ranges.set(chain, r);
@@ -83,6 +116,10 @@ async function main() {
     const { fromBlock, toBlock } = await rangeFor(chain);
 
     console.log(`\nGovernor ${address} (${chain})${label ? ' — ' + label : ''}`);
+    const code = await provider.getCode(address);
+    if (code === '0x') {
+      throw new Error(`No contract code at governor ${address} on ${chain}; check its chain entry in governors.txt`);
+    }
     const contract = new ethers.Contract(address, GOVERNOR_ABI, provider);
 
     console.log(`  Indexing proposals (block ${fromBlock} → ${toBlock})…`);
@@ -149,6 +186,8 @@ function readGovernors(file) {
   return readList(file).map((line) => {
     const parts = line.split(',').map((s) => s.trim());
     const addr = parts[0];
+    try { ethers.getAddress(addr); }
+    catch { throw new Error(`Invalid governor address "${addr}" in ${file}`); }
     const label = parts[1] || '';
     const rawChain = (parts[2] || 'mainnet').toLowerCase();
     const chain = CHAIN_ALIASES[rawChain] || rawChain;
@@ -157,20 +196,42 @@ function readGovernors(file) {
 }
 
 async function dateToBlock(provider, dateStr, mode) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    throw new Error(`Invalid date "${dateStr}" — use YYYY-MM-DD`);
-  }
-  const target = Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000);
+  const target = Math.floor(parseDate(dateStr).getTime() / 1000);
   const latest = await provider.getBlockNumber();
   let lo = 0;
-  let hi = latest;
+  // latest + 1 is a sentinel for dates after the current head.
+  let hi = latest + 1;
   while (lo < hi) {
-    const mid = (lo + hi) >> 1;
+    // Do not use bitwise midpoint arithmetic: it overflows for chains whose
+    // block height exceeds the signed 32-bit range.
+    const mid = Math.floor((lo + hi) / 2);
+    if (mid > latest) {
+      hi = mid;
+      continue;
+    }
     const b = await provider.getBlock(mid);
+    if (!b) throw new Error(`RPC returned no block for block number ${mid}`);
     if (b.timestamp < target) lo = mid + 1;
     else hi = mid;
   }
   return mode === 'after' ? lo : Math.max(0, lo - 1);
+}
+
+function parseDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    throw new Error(`Invalid date "${dateStr}" — use YYYY-MM-DD`);
+  }
+  const date = new Date(`${dateStr}T00:00:00Z`);
+  if (date.toISOString().slice(0, 10) !== dateStr) {
+    throw new Error(`Invalid date "${dateStr}" — use a real calendar date`);
+  }
+  return date;
+}
+
+function addDays(dateStr, days) {
+  const date = parseDate(dateStr);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 async function safeLookupAddress(provider, addr) {
