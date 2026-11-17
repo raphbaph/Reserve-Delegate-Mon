@@ -21,6 +21,7 @@ const CHAIN_ALIASES = { ethereum: 'mainnet', eth: 'mainnet' };
 const CHAIN_ENV = {
   mainnet: 'RPC_URL',
   base: 'RPC_URL_BASE',
+  bsc: 'RPC_URL_BSC',
 };
 
 const providers = {};

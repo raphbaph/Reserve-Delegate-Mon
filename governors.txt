@@ -1,7 +1,7 @@
 # Reserve governor contracts to scan — ONE PER LINE.
 # Format:  <address>, <label>, <chain>
 #   - label is optional (shown in CSV)
-#   - chain is optional, defaults to `mainnet`. Supported: mainnet, base.
+#   - chain is optional, defaults to `mainnet`. Supported: mainnet, base, bsc.
 # Lines starting with `#` and blank lines are ignored.
 #
 # Examples:
@@ -13,3 +13,9 @@
 # OLD: 0x868Fe81C276d730A1995Dc84b642E795dFb8F753, ETHPlus, mainnet
 0xd895a5D391fc09F12e8C8D57CfDe5c59BFBE2FA7, USD3, mainnet
 0xD56f09e158c9c3e1dE8D598e4E1Bc7E4fF29dfC8, bsdETH, base
+0x91deCceF10A7FCE6485a3Ea62794d1a90781bdC1, MAG7, base
+0xf6F73C085b22D791705b8173712F37A2FeEE58e1, PHOTON, bsc
+0x736242C3fB5cFeEE70267D5C3B123211b760C966,ROBOT, bsc
+0x11DdDE7845764C5317042c51e7e5EC665db33055, BUILDOUT, bsc
+0x056CCC0F4CEDc4246F79cBf5Fe40F4D170Cb6769, POWER, bsc
+0x72b4Be10fBb28Af7b227C1db48EdC3f2B111Ec6E, NEOCLOUD, bsc

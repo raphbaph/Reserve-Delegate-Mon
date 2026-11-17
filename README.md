@@ -3,6 +3,12 @@ Here's what to do to run it:
   cp .env.example .env        # then paste your Alchemy URL into RPC_URL
   node index.js --from 2024-01-01 --to 2025-05-11
 
+BNB Smart Chain (BSC) is also supported. Set `RPC_URL_BSC` in `.env` to your
+Alchemy BNB Smart Chain Mainnet RPC URL, and use `bsc` as the third column in
+`governors.txt`: `<address>, <label>, bsc`. Run the same command as above;
+BSC governors use their own provider and block range, and their CSV rows have
+`bsc` in the `chain` column. ENS resolution continues to use Ethereum mainnet.
+
   What it does
 
   - Reads delegates.txt and governors.txt (commented templates already in place).
