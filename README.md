@@ -13,8 +13,7 @@ BSC governors use their own provider and block range, and their CSV rows have
 
   - Reads delegates.txt and governors.txt (commented templates already in place).
   - Binary-searches block timestamps to convert your --from / --to dates into block numbers. Both dates are inclusive.
-  - Per governor: pulls ProposalCreated events and VoteCast + VoteCastWithParams starting from the --from date
-  filtered on the delegate set in one OR'd query per chunk.
+  - Per chain: queries all configured governors together. Each chunk uses one ProposalCreated query and one combined VoteCast / VoteCastWithParams query filtered to the tracked delegates.
   - Resolves ENS once per delegate (with forward-confirmation via lookupAddress).
   - Writes votes.csv with: governor, governor_label, voter, voter_ens, proposal_id, proposal_title, support, weight_raw, weight, reason, block_number, timestamp, tx_hash. Rows are sorted
    by governor then block, so each contract's votes are contiguous.
@@ -25,7 +24,11 @@ BSC governors use their own provider and block range, and their CSV rows have
   - weight assumes 18 decimals (true for Reserve's stRSR/ERC20Votes). weight_raw keeps the on-chain integer if you need exactness.
   - proposal_title stays blank if a vote references a proposal created before your --from date.
   - RPC network IDs are checked at startup, and an empty/reversed date range fails with an actionable error instead of silently writing zero rows.
-  - Block chunk size is 9,500 — well inside Alchemy's eth_getLogs ceiling. Retries with exponential backoff on transient failure
+  - Initial block chunks are 5,000 on BSC and 9,500 on Ethereum/Base. Provider range/response-size errors split the request and reduce subsequent request sizes automatically.
+  - Four concurrent log requests by default; use `--concurrency 2` to reduce RPC load. Accepted values: 1–32. Chains run sequentially so this limit applies across the scan.
+  - Temporary RPC failures retry with exponential backoff and jitter (up to five retries). Permanent errors fail immediately. Progress and retries are printed during each chain scan.
+  - CSV columns, date boundaries, delegate filters and per-governor proposal titles are preserved. No explorer API is required.
+  - Run regression tests with `node --test`.
 
 Base support is in. Three things to do on your side:
 

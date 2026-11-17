@@ -1,10 +1,11 @@
 import 'dotenv/config';
 import { ethers } from 'ethers';
 import fs from 'node:fs';
+import { scanLogs, CHUNK_SIZES } from './log-scanner.js';
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.from || !args.to) {
-  console.error('Usage: node index.js --from YYYY-MM-DD --to YYYY-MM-DD [--out votes.csv]');
+  console.error('Usage: node index.js --from YYYY-MM-DD --to YYYY-MM-DD [--out votes.csv] [--concurrency 4]');
   process.exit(1);
 }
 
@@ -15,7 +16,10 @@ const GOVERNOR_ABI = [
 ];
 
 const SUPPORT = { 0: 'Against', 1: 'For', 2: 'Abstain' };
-const CHUNK = 9_500;
+const concurrency = Number(args.concurrency ?? 4);
+if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+  throw new Error('--concurrency must be an integer between 1 and 32');
+}
 
 const CHAIN_ALIASES = { ethereum: 'mainnet', eth: 'mainnet' };
 const CHAIN_ENV = {
@@ -113,44 +117,58 @@ async function main() {
   const blockCache = new Map(); // key: `${chain}:${blockNumber}`
   const rows = [];
 
-  for (const { address, label, chain } of governors) {
+  for (const chain of chains) {
+    const chainGovernors = governors.filter((g) => g.chain === chain);
     const provider = getProvider(chain);
     const { fromBlock, toBlock } = await rangeFor(chain);
-
-    console.log(`\nGovernor ${address} (${chain})${label ? ' — ' + label : ''}`);
-    const code = await provider.getCode(address);
-    if (code === '0x') {
-      throw new Error(`No contract code at governor ${address} on ${chain}; check its chain entry in governors.txt`);
+    for (const { address } of chainGovernors) {
+      if (await provider.getCode(address) === '0x') {
+        throw new Error(`No contract code at governor ${address} on ${chain}; check its chain entry in governors.txt`);
+      }
     }
-    const contract = new ethers.Contract(address, GOVERNOR_ABI, provider);
+    console.log(`\nScanning ${chain}: ${chainGovernors.length} governor(s), ${CHUNK_SIZES[chain]} blocks/request, ${concurrency} workers…`);
+    let lastProgress = 0;
+    const events = await scanLogs({
+      provider, iface: new ethers.Interface(GOVERNOR_ABI),
+      addresses: chainGovernors.map((g) => g.address), voters: delegates,
+      fromBlock, toBlock, chunkSize: CHUNK_SIZES[chain], concurrency,
+      onProgress({ completed, total, elapsedMs }) {
+        if (Date.now() - lastProgress >= 5000 || completed === total) {
+          console.log(`  ${chain}: ${completed}/${total} queries completed (${Math.round(elapsedMs / 1000)}s)`);
+          lastProgress = Date.now();
+        }
+      },
+      onRetry({ from, to, reason, attempt }) {
+        console.warn(`  ${chain}: blocks ${from}–${to}: ${reason}${attempt ? ` (retry ${attempt}/5)` : ''}`);
+      },
+    });
+    for (const { address, label } of chainGovernors) {
+      const governorEvents = events.filter((e) => e.address.toLowerCase() === address.toLowerCase());
+      const proposalMap = new Map(governorEvents.filter((e) => e.eventName === 'ProposalCreated')
+        .map((e) => [e.args.proposalId.toString(), (e.args.description || '').split('\n')[0].slice(0, 200)]));
+      const votes = governorEvents.filter((e) => e.eventName !== 'ProposalCreated');
+      console.log(`  ${label || address}: ${proposalMap.size} proposal(s), ${votes.length} vote(s)`);
 
-    console.log(`  Indexing proposals (block ${fromBlock} → ${toBlock})…`);
-    const proposalMap = await loadProposals(contract, fromBlock, toBlock);
-    console.log(`  Found ${proposalMap.size} proposal(s)`);
-
-    console.log(`  Querying votes…`);
-    const votes = await loadVotes(contract, delegates, fromBlock, toBlock);
-    console.log(`  Found ${votes.length} vote(s) from tracked delegates`);
-
-    for (const v of votes) {
-      const ts = await getBlockTimestamp(provider, chain, v.blockNumber, blockCache);
-      const id = v.args.proposalId.toString();
-      rows.push({
-        chain,
-        governor: address,
-        governor_label: label || '',
-        voter: v.args.voter,
-        voter_ens: ensCache.get(v.args.voter.toLowerCase()) || '',
-        proposal_id: id,
-        proposal_title: proposalMap.get(id) || '',
-        support: SUPPORT[Number(v.args.support)] ?? String(v.args.support),
-        weight_raw: v.args.weight.toString(),
-        weight: ethers.formatUnits(v.args.weight, 18),
-        reason: (v.args.reason || '').replace(/\r?\n/g, ' ').trim(),
-        block_number: v.blockNumber,
-        timestamp: new Date(ts * 1000).toISOString(),
-        tx_hash: v.transactionHash,
-      });
+      for (const v of votes) {
+        const ts = await getBlockTimestamp(provider, chain, v.blockNumber, blockCache);
+        const id = v.args.proposalId.toString();
+        rows.push({
+          chain,
+          governor: address,
+          governor_label: label || '',
+          voter: v.args.voter,
+          voter_ens: ensCache.get(v.args.voter.toLowerCase()) || '',
+          proposal_id: id,
+          proposal_title: proposalMap.get(id) || '',
+          support: SUPPORT[Number(v.args.support)] ?? String(v.args.support),
+          weight_raw: v.args.weight.toString(),
+          weight: ethers.formatUnits(v.args.weight, 18),
+          reason: (v.args.reason || '').replace(/\r?\n/g, ' ').trim(),
+          block_number: v.blockNumber,
+          timestamp: new Date(ts * 1000).toISOString(),
+          tx_hash: v.transactionHash,
+        });
+      }
     }
   }
 
@@ -247,45 +265,6 @@ async function getBlockTimestamp(provider, chain, n, cache) {
   const b = await provider.getBlock(n);
   cache.set(key, b.timestamp);
   return b.timestamp;
-}
-
-async function loadVotes(contract, voters, fromBlock, toBlock) {
-  const out = [];
-  const f1 = contract.filters.VoteCast(voters);
-  const f2 = contract.filters.VoteCastWithParams(voters);
-  for (let from = fromBlock; from <= toBlock; from += CHUNK) {
-    const to = Math.min(from + CHUNK - 1, toBlock);
-    const [a, b] = await Promise.all([
-      queryWithRetry(contract, f1, from, to),
-      queryWithRetry(contract, f2, from, to),
-    ]);
-    out.push(...a, ...b);
-  }
-  return out.sort((x, y) => x.blockNumber - y.blockNumber);
-}
-
-async function loadProposals(contract, fromBlock, toBlock) {
-  const map = new Map();
-  const f = contract.filters.ProposalCreated();
-  for (let from = fromBlock; from <= toBlock; from += CHUNK) {
-    const to = Math.min(from + CHUNK - 1, toBlock);
-    const events = await queryWithRetry(contract, f, from, to);
-    for (const e of events) {
-      const id = e.args.proposalId.toString();
-      const desc = e.args.description || '';
-      map.set(id, desc.split('\n')[0].slice(0, 200));
-    }
-  }
-  return map;
-}
-
-async function queryWithRetry(contract, filter, from, to, attempt = 0) {
-  try { return await contract.queryFilter(filter, from, to); }
-  catch (e) {
-    if (attempt >= 5) throw e;
-    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
-    return queryWithRetry(contract, filter, from, to, attempt + 1);
-  }
 }
 
 function writeCsv(file, rows) {
