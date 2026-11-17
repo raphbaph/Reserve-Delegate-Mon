@@ -26,6 +26,7 @@ const CHAIN_ENV = {
 const CHAIN_IDS = {
   mainnet: 1n,
   base: 8453n,
+  bsc: 56n,
 };
 
 const providers = {};
